@@ -27,6 +27,7 @@
   .tot{font-size:22px;font-weight:800;color:var(--oro)}
   .pie{text-align:center;color:var(--tenue);font-size:12px;margin-top:24px}
   .cargando{color:var(--tenue);text-align:center;padding:10px}
+  .nota{font-size:12px;color:var(--tenue);margin:6px 0 0;line-height:1.45}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
@@ -42,13 +43,13 @@
   <div class="card" id="paso1">
     <label>Folio del ticket</label>
     <input id="folio" placeholder="Ej. L-000135" autocomplete="off">
+    <p class="nota">Si tu cuenta se dividió entre varias personas, usa el folio de <b>tu</b> ticket, el que termina en <b>-1</b>, <b>-2</b>, etc.</p>
     <label>Total del ticket ($)</label>
     <input id="total" type="number" step="0.01" placeholder="Ej. 530.00" inputmode="decimal">
-    <div class="row2">
-      <div><button class="btn d" onclick="facturar(true)">Factura general</button></div>
-      <div><button class="btn g" onclick="mostrarDatos()">Con mis datos</button></div>
-    </div>
+    <button class="btn o" onclick="mostrarDatos()">Continuar</button>
+    <button class="btn g" style="margin-top:8px;font-size:14px" onclick="recuperar()">🔎 Ya facturé — quiero mi factura otra vez</button>
     <div id="msg1"></div>
+    <div id="rec"></div>
   </div>
 
   <!-- PASO 2: datos fiscales -->
@@ -56,9 +57,10 @@
     <h1 style="font-size:16px;margin:0 0 6px">Tus datos fiscales</h1>
     <p class="sub" style="margin:0 0 8px">Deben coincidir EXACTO con tu Constancia de Situación Fiscal (SAT).</p>
     <label>RFC</label>
-    <input id="rfc" placeholder="Tu RFC" style="text-transform:uppercase" autocomplete="off">
+    <input id="rfc" placeholder="Tu RFC" style="text-transform:uppercase" autocomplete="off" onblur="buscarRfc()">
+    <div id="auto"></div>
     <label>Razón social / Nombre (sin régimen: sin "SA de CV")</label>
-    <input id="nombre" placeholder="Como aparece en tu constancia" autocomplete="off">
+    <input id="nombre" placeholder="Como aparece en tu constancia" style="text-transform:uppercase" autocomplete="off">
     <div class="row2">
       <div><label>Código Postal</label><input id="cp" placeholder="Ej. 68370" inputmode="numeric"></div>
       <div><label>Uso de la factura</label>
@@ -83,21 +85,47 @@
       <option value="621">621 · Incorporación Fiscal</option>
       <option value="616">616 · Sin obligaciones fiscales</option>
     </select>
+    <label>¿Cómo pagaste? <span style="font-weight:400;opacity:.7">(solo si la caja lo registró distinto)</span></label>
+    <select id="forma">
+      <option value="">Como lo registró la caja</option>
+      <option value="28">28 · Tarjeta de débito</option>
+      <option value="04">04 · Tarjeta de crédito</option>
+      <option value="01">01 · Efectivo</option>
+      <option value="03">03 · Transferencia</option>
+    </select>
+
     <label>Correo (para enviarte la factura)</label>
     <input id="correo" type="email" placeholder="tucorreo@ejemplo.com" autocomplete="off">
-    <button class="btn o" onclick="facturar(false)">Generar mi factura</button>
+    <button class="btn o" onclick="facturar()">Generar mi factura</button>
     <button class="btn g" onclick="ocultarDatos()" style="margin-top:8px">‹ Regresar</button>
     <div id="msg2"></div>
   </div>
 
-  <div class="pie">Los Pares 84×88 · Tuxtepec, Oaxaca · Facturación electrónica CFDI 4.0</div>
+  <div class="pie">Los Pares 84×88 · Tuxtepec, Oaxaca · Facturación electrónica CFDI 4.0<br><span style="font-size:10px">v7 · 7 oct 2026</span></div>
 </div>
 
 <script>
   // ===== CONFIGURA AQUÍ (ya vienen tus datos de la nube) =====
   const FN  = "https://nkpzjnfazuqlbvctyqzg.supabase.co/functions/v1/factura-timbrar";
+  const SUPA  = "https://nkpzjnfazuqlbvctyqzg.supabase.co";
+  const FN_RE = SUPA + "/functions/v1/factura-reenviar";
   const KEY = "sb_publishable_GSAiqzwne2iMe1niBbSMkQ_6XUCGzjB";
   // ============================================================
+
+  // ===== v7 (7 oct 2026): SE QUITO "FACTURA GENERAL" =====
+  //  Ese boton timbraba de inmediato un CFDI a PUBLICO EN GENERAL, sin pedir
+  //  datos. Los clientes lo picaban por equivocacion y pasaban dos cosas malas:
+  //   1) se llevaban una factura que NO les sirve para deducir (va a nombre de
+  //      "Publico en general", no al suyo), y
+  //   2) el folio de su ticket quedaba marcado como facturado, asi que ya no
+  //      podian sacar la suya sin cancelar primero ante el SAT.
+  //  Las facturas globales de publico en general las hace la contadora
+  //  directamente en el portal del SAT, no van por aqui.
+  //  Ahora el portal tiene UN SOLO camino: capturar los datos fiscales.
+  //  La funcion facturar() ya no recibe el parametro 'general' y SIEMPRE
+  //  manda rfc/nombre/cp, asi que nunca puede timbrar en modo global.
+  // ========================================================
+
   const $ = (id) => document.getElementById(id);
   function mostrarDatos(){ if(!validaTicket("msg1")) return; $("paso2").classList.remove("hide"); $("paso2").scrollIntoView({behavior:"smooth"}); }
   function ocultarDatos(){ $("paso2").classList.add("hide"); $("msg2").innerHTML=""; }
@@ -108,23 +136,142 @@
   }
   function msg(caja,tipo,html){ $(caja).innerHTML = `<div class="msg ${tipo}">${html}</div>`; }
 
-  async function facturar(general){
-    const caja = general ? "msg1" : "msg2";
+  // ===== v6: autollenado por RFC (modulo 63) =====
+  //  Solo funciona si ese RFC ya facturo antes aqui. El SAT no publica los
+  //  datos fiscales de un RFC, asi que la primera vez hay que capturarlos.
+  //  Pide folio y total: solo quien trae el ticket puede consultarlos.
+  //  El CORREO no se autollena a proposito, para que la factura no se le vaya
+  //  al correo de alguien mas.
+  let _ultimoRfc = "";
+  async function buscarRfc(){
+    const rfc = ($("rfc").value||"").trim().toUpperCase();
+    const f   = ($("folio").value||"").trim();
+    const t   = parseFloat($("total").value);
+    if(!$("auto")) return;
+    if(rfc.length < 12 || !f || !t){ $("auto").innerHTML=""; return; }
+    if(rfc === _ultimoRfc) return;
+    _ultimoRfc = rfc;
+    $("auto").innerHTML = `<div class="msg ok" style="font-size:13px">Buscando tus datos…</div>`;
+    try{
+      const r = await fetch(`${SUPA}/rest/v1/rpc/datos_fiscales_rfc`, {
+        method:"POST",
+        headers:{ "Content-Type":"application/json", "apikey":KEY, "Authorization":"Bearer "+KEY },
+        body: JSON.stringify({ p_folio:f, p_total:t, p_rfc:rfc })
+      });
+      const d = await r.json();
+      const c = Array.isArray(d) ? d[0] : d;
+      if(c && c.encontrado){
+        if(c.razon_social)   $("nombre").value  = c.razon_social;
+        if(c.cp)             $("cp").value      = c.cp;
+        if(c.regimen_fiscal) $("regimen").value = c.regimen_fiscal;
+        if(c.uso_cfdi)       $("uso").value     = c.uso_cfdi;
+        $("auto").innerHTML = `<div class="msg ok" style="font-size:13px">✅ Te llenamos tus datos de la vez pasada. <b>Revísalos</b> por si algo cambió, y escribe tu correo.</div>`;
+      }else{
+        $("auto").innerHTML = `<div class="msg" style="font-size:13px;background:#fdf6e3;color:#8a6d1f;border:1px solid #efe0b0">Es tu primera factura con nosotros: captura tus datos tal como vienen en tu Constancia. La próxima vez ya se llenan solos.</div>`;
+      }
+    }catch(e){ $("auto").innerHTML=""; }
+  }
+
+  // ===== v6: "ya facturé, quiero mi factura otra vez" =====
+  let _rec = null;
+  async function recuperar(){
+    if(!validaTicket("msg1")) return;
+    const f = $("folio").value.trim(), t = parseFloat($("total").value);
+    $("msg1").innerHTML = "";
+    $("rec").innerHTML = `<div class="msg ok">Buscando tu factura…</div>`;
+    try{
+      const r = await fetch(FN_RE, {
+        method:"POST",
+        headers:{ "Content-Type":"application/json", "apikey":KEY, "Authorization":"Bearer "+KEY },
+        body: JSON.stringify({ folio:f, total:t, solo_archivos:true })
+      });
+      const d = await r.json();
+      if(!d.ok){ $("rec").innerHTML = `<div class="msg err">${d.motivo||"No encontramos la factura de ese ticket."}</div>`; return; }
+      _rec = d;
+      const canc = d.cancelada ? `<div class="msg err" style="margin-top:8px">Esta factura fue <b>CANCELADA</b> ante el SAT. No te sirve para deducir; pregunta en el restaurante.</div>` : "";
+      $("rec").innerHTML =
+        `<div class="msg ok"><b>Aquí está tu factura</b><br>${d.receptor||""}<br>Total: <b>$${d.total}</b><br>
+         <span style="font-size:11px;word-break:break-all;opacity:.8">${d.uuid}</span></div>
+         ${canc}
+         <button class="btn d" style="margin-top:8px" onclick="recBajar('xml')">⬇ Descargar XML</button>
+         <button class="btn o" style="margin-top:8px" onclick="recBajar('pdf')">⬇ Descargar PDF</button>
+         <label style="margin-top:10px">¿Te la mandamos por correo?</label>
+         <input id="recMail" type="email" placeholder="tucorreo@ejemplo.com" autocomplete="off">
+         <button class="btn g" style="margin-top:8px" onclick="recCorreo()">📧 Enviármela por correo</button>
+         <div id="recMsg"></div>`;
+      $("rec").scrollIntoView({behavior:"smooth"});
+    }catch(e){
+      $("rec").innerHTML = `<div class="msg err">Falló la conexión. Revisa tu internet e intenta de nuevo.</div>`;
+    }
+  }
+  function recBajar(que){
+    if(!_rec) return;
+    let blob, nom;
+    if(que === "xml"){
+      if(!_rec.xml){ $("recMsg").innerHTML = `<div class="msg err">Esta factura no tiene XML guardado. Pídela en el restaurante.</div>`; return; }
+      blob = new Blob([_rec.xml], {type:"application/xml"}); nom = "Factura_"+_rec.uuid+".xml";
+    }else{
+      if(!_rec.pdf_base64){ $("recMsg").innerHTML = `<div class="msg err">No se pudo armar el PDF. Usa el XML, que es el válido ante el SAT.</div>`; return; }
+      const bin = atob(_rec.pdf_base64); const arr = new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++) arr[i] = bin.charCodeAt(i);
+      blob = new Blob([arr], {type:"application/pdf"}); nom = "Factura_"+_rec.uuid+".pdf";
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = nom;
+    document.body.appendChild(a); a.click();
+    setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 4000);
+  }
+  async function recCorreo(){
+    if(!_rec) return;
+    const to = (($("recMail")&&$("recMail").value)||"").trim();
+    if(!to || !/@/.test(to)){ $("recMsg").innerHTML = `<div class="msg err">Escribe un correo válido.</div>`; return; }
+    $("recMsg").innerHTML = `<div class="msg ok">Enviando…</div>`;
+    try{
+      const r = await fetch(FN_RE, {
+        method:"POST",
+        headers:{ "Content-Type":"application/json", "apikey":KEY, "Authorization":"Bearer "+KEY },
+        body: JSON.stringify({ uuid:_rec.uuid, correo:to })
+      });
+      const d = await r.json();
+      $("recMsg").innerHTML = d.ok
+        ? `<div class="msg ok">📧 Listo, te la mandamos a <b>${to}</b> con el XML y el PDF. (Revisa spam por si acaso.)</div>`
+        : `<div class="msg err">${d.motivo||d.resultado||"No se pudo enviar."}</div>`;
+    }catch(e){ $("recMsg").innerHTML = `<div class="msg err">Falló el envío. Usa los botones de descargar.</div>`; }
+  }
+
+  // v7: SIEMPRE con datos del cliente. Ya no existe el camino "general".
+  async function facturar(){
+    const caja = "msg2";
     if(!validaTicket(caja)) return;
     const f=$("folio").value.trim(), t=parseFloat($("total").value);
     let url = `${FN}?apikey=${KEY}&folio=${encodeURIComponent(f)}&total=${t}`;
-    if(!general){
-      const rfc=$("rfc").value.trim().toUpperCase(), nom=$("nombre").value.trim(), cp=$("cp").value.trim(), reg=$("regimen").value, uso=$("uso").value, cor=$("correo").value.trim();
-      if(!rfc||!nom||!cp){ msg("msg2","err","Llena RFC, nombre y código postal."); return; }
-      url += `&rfc=${encodeURIComponent(rfc)}&nombre=${encodeURIComponent(nom)}&cp=${encodeURIComponent(cp)}&regimen=${reg}&uso=${uso}&correo=${encodeURIComponent(cor)}`;
-    }
+    const rfc=$("rfc").value.trim().toUpperCase(), nom=$("nombre").value.trim(), cp=$("cp").value.trim(), reg=$("regimen").value, uso=$("uso").value, cor=$("correo").value.trim();
+    if(!rfc||!nom||!cp){ msg(caja,"err","Llena RFC, nombre y código postal."); return; }
+    const correoCliente = cor;
+    url += `&rfc=${encodeURIComponent(rfc)}&nombre=${encodeURIComponent(nom)}&cp=${encodeURIComponent(cp)}&regimen=${reg}&uso=${uso}&correo=${encodeURIComponent(cor)}`;
+    // v4: forma de pago del SAT. Vacio = la que registro la caja.
+    const fp = $("forma") ? $("forma").value : "";
+    if(fp) url += `&forma=${fp}`;
     msg(caja,"ok","Generando tu factura… espera unos segundos ⏳");
     try{
       const r = await fetch(url);
       const d = await r.json();
       if(d.timbrado){
         window._fac = d;
-        msg(caja,"ok",`✅ <b>¡Factura generada!</b><br>Consumo: $${d.subtotal} + IVA $${d.iva} = <b>$${d.total}</b><br><br>Folio fiscal (UUID):<br><span class="uuid">${d.uuid}</span><br><br><button class="btn d" style="margin-top:6px" onclick="descargarXML()">⬇ Descargar XML</button><button class="btn o" style="margin-top:8px" onclick="descargarPDF()">⬇ Descargar PDF</button>`);
+        window._caja = caja;
+        msg(caja,"ok",`✅ <b>¡Factura generada!</b><br>Consumo: $${d.subtotal} + IVA $${d.iva} = <b>$${d.total}</b><br><br>Folio fiscal (UUID):<br><span class="uuid">${d.uuid}</span><br><br><button class="btn d" style="margin-top:6px" onclick="descargarXML()">⬇ Descargar XML</button><button class="btn o" style="margin-top:8px" onclick="descargarPDF()">⬇ Descargar PDF</button><button class="btn g" style="margin-top:8px" onclick="verXML()">👁 Ver / copiar XML</button><div id="envio" style="margin-top:6px"></div>`);
+        // v3 (30 sep): el correo con el XML ya lo manda el SERVIDOR al timbrar
+        // (factura-timbrar v8). Aqui solo avisamos como salio, para no mandar
+        // dos correos al cliente.
+        const envio = $("envio");
+        if(envio && d.correo){
+          if(String(d.correo).indexOf("enviado") === 0){
+            envio.innerHTML = `<div class="msg ok">📧 Te enviamos tu <b>XML</b> a <b>${correoCliente}</b>. (Revisa spam por si acaso.)</div>`;
+          } else if(String(d.correo) !== "sin correo"){
+            envio.innerHTML = `<div class="msg err">No pudimos enviarte el correo. Descarga aquí tu XML y tu PDF.</div>`;
+          }
+        }
       } else if(d.motivo){
         msg(caja,"err","⚠️ "+d.motivo);
       } else if(d.mensaje_error){
@@ -136,23 +283,59 @@
   }
 
   // ---- Descargar XML timbrado ----
+  //  ARREGLO 30 sep: antes el enlace no se agregaba a la pagina y el archivo
+  //  se borraba de memoria en el mismo instante del clic (revokeObjectURL),
+  //  asi que en celulares y en Firefox NO bajaba nada (el PDF si, porque lo
+  //  arma jsPDF). Ahora se agrega al DOM, se revoca despues, y si aun asi el
+  //  navegador lo bloquea, queda el boton "Ver / copiar XML".
   function descargarXML(){
     const d = window._fac; if(!d||!d.xml_timbrado){ alert("No hay XML disponible."); return; }
-    const blob = new Blob([d.xml_timbrado], {type:"application/xml"});
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "Factura_"+d.uuid+".xml";
-    a.click(); URL.revokeObjectURL(a.href);
+    try{
+      const blob = new Blob([d.xml_timbrado], {type:"application/xml;charset=utf-8"});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "Factura_"+d.uuid+".xml";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 4000);
+    }catch(e){ verXML(); }
+  }
+
+  // ---- Respaldo: ver el XML en pantalla para copiarlo (sirve en cualquier
+  //      celular, aunque el navegador no deje bajar archivos .xml) ----
+  function verXML(){
+    const d = window._fac; if(!d||!d.xml_timbrado){ alert("No hay XML disponible."); return; }
+    const caja = $(window._caja || "msg2");
+    const prev = caja.innerHTML;
+    caja.innerHTML = `<div class="msg ok"><b>XML de tu factura</b><br>
+      <span style="font-size:13px">Toca "Copiar", pegalo en un bloc de notas y guardalo como <b>Factura.xml</b>. Tambien puedes bajarlo del portal del SAT.</span>
+      <textarea id="xmltxt" readonly style="width:100%;height:150px;margin-top:8px;font-family:monospace;font-size:11px;background:#161310;color:#efe7d6;border:1px solid #39332b;border-radius:10px;padding:8px"></textarea>
+      <button class="btn d" style="margin-top:8px" onclick="copiarXML()">Copiar XML</button>
+      <button class="btn g" style="margin-top:8px" onclick="volverCaja()">‹ Regresar</button></div>`;
+    $("xmltxt").value = d.xml_timbrado;
+    window._prevCaja = prev;
+  }
+  function volverCaja(){ const caja=$(window._caja||"msg2"); if(window._prevCaja) caja.innerHTML = window._prevCaja; }
+  function copiarXML(){
+    const t = $("xmltxt"); if(!t) return;
+    t.select(); t.setSelectionRange(0, 999999);
+    try{
+      if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(t.value); }
+      else { document.execCommand("copy"); }
+      alert("XML copiado. Pegalo en un bloc de notas y guardalo como Factura.xml");
+    }catch(e){ alert("Selecciona el texto y copialo a mano."); }
   }
 
   // ---- Leer un atributo del XML timbrado ----
   function attr(xml, re){ const m = xml.match(re); return m ? m[1] : ""; }
 
-  // ---- Descargar PDF (representación impresa, marca Los Pares + QR SAT) ----
-  function descargarPDF(){
+  // ---- Construir el PDF (representación impresa) y entregarlo al callback ----
+  //  cb(doc) recibe el documento jsPDF ya armado (para guardarlo o mandarlo por correo).
+  function _genPDF(cb){
     const d = window._fac; if(!d||!d.xml_timbrado){ alert("No hay factura."); return; }
     const x = d.xml_timbrado;
-    // Datos del CFDI/timbre
     const emisorRfc = attr(x, /Emisor[^>]*Rfc="([^"]+)"/);
     const emisorNom = attr(x, /Emisor[^>]*Nombre="([^"]+)"/);
     const emisorReg = attr(x, /Emisor[^>]*RegimenFiscal="([^"]+)"/);
@@ -165,10 +348,8 @@
     const selloSAT = attr(x, /SelloSAT="([^"]+)"/);
     const noCertSAT = attr(x, /NoCertificadoSAT="([^"]+)"/);
     const uuid = d.uuid;
-    // Cadena original del timbre (para el QR): ||1.1|UUID|FechaTimbrado|SelloCFDI(los ultimos 8)|NoCertSAT||  -> el QR del SAT usa una URL
     const qrUrl = "https://verificacfdi.facturaelectronica.sat.gob.mx/default.aspx?id="+uuid+"&re="+emisorRfc+"&rr="+recRfc+"&tt="+d.total+"&fe="+encodeURIComponent(selloCFDI.slice(-8));
 
-    // Generar QR en un canvas oculto
     const cont = document.createElement("div"); cont.style.display="none"; document.body.appendChild(cont);
     new QRCode(cont, { text: qrUrl, width: 300, height: 300, correctLevel: QRCode.CorrectLevel.M });
     setTimeout(()=>{
@@ -177,7 +358,6 @@
       const { jsPDF } = window.jspdf;
       const doc = new jsPDF({unit:"mm", format:"letter"});
       const W = 216; let y = 16;
-      // Encabezado
       doc.setFontSize(20); doc.setTextColor(30); doc.setFont(undefined,"bold");
       doc.text("Los Pares 84x88", 14, y);
       doc.setFontSize(9); doc.setTextColor(120); doc.setFont(undefined,"normal");
@@ -194,7 +374,6 @@
       L("Fecha: "+fecha); L("Concepto: Consumo en restaurante");
       L("Subtotal: $"+d.subtotal+"    IVA: $"+d.iva);
       doc.setFont(undefined,"bold"); doc.setFontSize(13); L("TOTAL: $"+d.total); doc.setFontSize(10); doc.setFont(undefined,"normal");
-      // Bloque fiscal + QR
       y+=4; doc.setDrawColor(200); doc.setLineWidth(0.3); doc.line(14, y, W-14, y); y+=6;
       doc.addImage(qrData, "PNG", 14, y, 34, 34);
       const xr = 54; let yr = y;
@@ -209,9 +388,20 @@
       doc.text("Sello SAT:", 14, y); doc.text(selloSAT, 14, y+3, {maxWidth: W-28});
       doc.setFontSize(7); doc.setTextColor(150);
       doc.text("Este documento es una representacion impresa de un CFDI. Los Pares 84x88 - Tuxtepec, Oaxaca.", 14, 270);
-      doc.save("Factura_"+uuid+".pdf");
+      try{ cb(doc); }catch(e){ console.log(e); }
       cont.remove();
     }, 350);
   }
+
+  // ---- Descargar PDF ----
+  function descargarPDF(){ _genPDF((doc)=>{ doc.save("Factura_"+window._fac.uuid+".pdf"); }); }
+
+  // v5 (1 oct): se quito el envio desde el navegador. Desde `factura-timbrar`
+  // v10 el CORREO LO MANDA EL SERVIDOR al timbrar, con el XML y el PDF
+  // adjuntos. El boton viejo apuntaba a una funcion que ni siquiera existia
+  // con ese nombre (su URL real era otra), asi que siempre fallaba.
+  // Si el cliente no dejo correo, se lleva los archivos con los botones de
+  // descargar, o lo pide en el restaurante.
+
 </script>
 </body></html>
